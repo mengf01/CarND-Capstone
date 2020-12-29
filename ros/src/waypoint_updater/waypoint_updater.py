@@ -3,6 +3,7 @@
 import rospy
 from geometry_msgs.msg import PoseStamped
 from styx_msgs.msg import Lane, Waypoint
+from std_msgs.msg import Int32
 
 import math
 
@@ -27,7 +28,9 @@ TODO (for Yousuf and Aaron): Stopline location for each traffic light.
 '''
 
 LOOKAHEAD_WPS = 50 # Number of waypoints we will publish. You can change this number
-
+STOP_LINE_MARGIN = 2   
+MAX_DECEL = 0.5                                   
+CONSTANT_DECEL = 1 / LOOKAHEAD_WPS
 
 class WaypointUpdater(object):
     def __init__(self):
@@ -35,16 +38,19 @@ class WaypointUpdater(object):
 
         rospy.Subscriber('/current_pose', PoseStamped, self.pose_cb)
         rospy.Subscriber('/base_waypoints', Lane, self.waypoints_cb)
+        rospy.Subscriber('/traffic_waypoint', Int32, self.traffic_cb)
 
         # TODO: Add a subscriber for /traffic_waypoint and /obstacle_waypoint below
 
         self.final_waypoints_pub = rospy.Publisher('final_waypoints', Lane, queue_size=1)
 
         # TODO: Add other member variables you need below
-        self.loop_rate = 50
+        self.loop_rate = 10
         self.pose = None
         self.base_waypoints = None
         self.waypoints_tree = None
+
+        self.stopline_wp_idx = -1
 
         self.loop()
 
@@ -52,9 +58,36 @@ class WaypointUpdater(object):
         rate = rospy.Rate(self.loop_rate)
         while not rospy.is_shutdown():
             if self.pose and self.base_waypoints:
-                next_way_point_idx = self.get_next_waypoint_idx()
-                self.publish_waypoints(next_way_point_idx)
+                self.publish_waypoints()
             rate.sleep()
+
+    def generate_lane(self):
+        lane = Lane()
+
+        closest_idx = self.get_next_waypoint_idx()
+        farthest_idx = closest_idx + LOOKAHEAD_WPS
+        base_waypoints = self.base_waypoints.waypoints[closest_idx:farthest_idx]
+
+        if (self.stopline_wp_idx == -1) or (self.stopline_wp_idx >= farthest_idx):
+            lane.waypoints = base_waypoints
+        else:
+            lane.waypoints = self.decelerate_waypoints(base_waypoints, closest_idx)
+        return lane
+
+    def decelerate_waypoints(self, waypoints, closest_idx):
+        temp = []
+        stop_idx = max(self.stopline_wp_idx - closest_idx - STOP_LINE_MARGIN, 0)
+        for i, wp in enumerate(waypoints):
+            p = Waypoint()
+            p.pose = wp.pose
+            # Distance includes a number of waypoints back so head of car stops at line
+            dist = self.distance(waypoints, i, stop_idx)
+            vel = math.sqrt(2 * MAX_DECEL * dist)
+            if vel < 1.0:
+                vel = 0.0
+            p.twist.twist.linear.x = min(vel, wp.twist.twist.linear.x)
+            temp.append(p)
+        return temp 
 
     def get_next_waypoint_idx(self):
         x, y = self.pose.pose.position.x, self.pose.pose.position.y
@@ -69,12 +102,9 @@ class WaypointUpdater(object):
             closest_idx = (closest_idx + 1) % len(self.waypoints_tree.data)
         return closest_idx
 
-    def publish_waypoints(self, closest_idx):
-        lane = Lane()
-        lane.header = self.base_waypoints.header
-        lane.waypoints = self.base_waypoints.waypoints[closest_idx: closest_idx + LOOKAHEAD_WPS]
-        self.final_waypoints_pub.publish(lane)
-        print("Waypoints published with N = {}".format(len(lane.waypoints)))
+    def publish_waypoints(self):
+        final_lane = self.generate_lane()
+        self.final_waypoints_pub.publish(final_lane)
 
     def pose_cb(self, msg):
         self.pose = msg
@@ -87,7 +117,7 @@ class WaypointUpdater(object):
 
     def traffic_cb(self, msg):
         # TODO: Callback for /traffic_waypoint message. Implement
-        pass
+        self.stopline_wp_idx = msg.data
 
     def obstacle_cb(self, msg):
         # TODO: Callback for /obstacle_waypoint message. We will implement it later
