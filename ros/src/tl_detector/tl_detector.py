@@ -158,9 +158,7 @@ class TLDetector(object):
                     closest_light = light
 
         if closest_light:
-            # state = self.get_light_state(light)
-            # TODO: uncomment above when classifier is implemented
-            state = closest_light.state
+            state = self.get_light_state(light)
         return stopline_wp_idx, state
 
 if __name__ == '__main__':
